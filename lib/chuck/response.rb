@@ -62,6 +62,19 @@ module Chuck
       content
     end
 
+    def body=(value)
+      content = value
+      case headers.map {|pair| pair.join(': ')}.join($/)
+        when %r{Content-Encoding: +deflate}i
+          content = Zlib::Deflate.deflate(content)
+        when %r{Content-Encoding: +gzip}i
+          zstream = Zlib::GzipWriter.new(StringIO.new(content))
+          content = zstream.read
+          zstream.close
+      end
+      tuple[:body] = content
+    end
+
     # TODO: helpers that don't actually belong here
     def content_type
       pair = headers.find {|k, v| k.downcase == 'content-type'}
