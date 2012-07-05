@@ -70,15 +70,25 @@ module Chuck
 
     def intercept
       @parser.reset
-      profile.process!(@request)
-      @request.save
+      response = catch(:halt) { pre_process }
 
-      if @request.connect?
+      if Response === response
+        request_callback
+        forward_to_client(response)
+      elsif @request.connect?
         http_connect
       else
         @pending += 1
         forward_to_server
       end
+    end
+
+    def pre_process
+      profile.process!(@request)
+      @request.save
+    rescue => e
+      Chuck.log_error(e)
+      http_error(502, 'Proxy Filter Error', e.message)
     end
 
     def parse_url base, url
@@ -103,9 +113,16 @@ module Chuck
     def start_ssl certificate
       http_response(200, "Connected")
       if @request.ssl?
-        @ssl = SSL.certificate(OpenSSL::X509::Certificate.new(certificate).subject)
+        @ssl = SSL.certificate(subject_for(certificate))
         start_tls(cert_chain_file: @ssl.certificate_file, private_key_file: @ssl.private_key_file, verify_peer: false)
       end
+    end
+
+    def subject_for certificate
+      subject = OpenSSL::X509::Certificate.new(certificate).subject.to_a
+      subject = subject.to_a.map {|value| value.take(2)}.reject {|f, v| f == 'CN'}
+      subject << ['CN', @request.uri.host]
+      OpenSSL::X509::Name.new(subject)
     end
 
     def response_callback response
@@ -125,9 +142,9 @@ module Chuck
         return
       end
 
-      request_callback
-      @r_callback_done = true
       establish_backend_connection(@request.uri.host, @request.uri.port) unless @backend
+
+      request_callback
       @backend.send_data(@request.to_s)
     rescue => e
       Chuck.log_error(e)
@@ -152,6 +169,7 @@ module Chuck
     end
 
     def request_callback
+      @r_callback_done = true
       if callback = profile.callbacks[:request][@request.uri.host] || profile.callbacks[:request][nil]
         begin
           callback.call(@request)

@@ -1,4 +1,5 @@
 require 'chuck/condition'
+require 'chuck/rack'
 
 module Chuck
   class Profile
@@ -12,6 +13,7 @@ module Chuck
       rules.each do |condition, processor|
         processor.call(request) if condition.match?(request)
       end
+      nil
     end
 
     def callbacks
@@ -49,22 +51,36 @@ module Chuck
         rules << [Condition.new(condition), callback]
       end
 
+      def mock from, app
+        capture(uri: from_re(from)) do |request|
+          response = Rack.response(*app.call(Rack.request(request)))
+          response.update(request_id: request.id, session_id: request.session_id)
+          throw :halt, response
+        end
+      end
+
       def map from, to, &callback
         to = URI.parse(to)
         raise ArgumentError, "to needs to be http:// or https:// uris" unless %r{https?}i.match(to.scheme)
 
+        capture(uri: from_re(from)) do |request|
+          request.uri = to + request.relative_uri
+          begin
+            callback.call(request) if callback
+          rescue => e
+            Chuck.log_error(e)
+          end
+        end
+      end
+
+      def from_re from
         case from
-          when %r{^https?://}i
-            from = %r{^#{from}}
           when Regexp
-            # nop
+            from
+          when %r{^https?://}i
+            %r{^#{from}}
           else
             raise ArgumentError, "from needs to be a Regexp or http:// or https:// uri"
-        end
-
-        capture(uri: from) do |request|
-          request.uri = to + request.relative_uri
-          callback.call(request) if callback
         end
       end
 
